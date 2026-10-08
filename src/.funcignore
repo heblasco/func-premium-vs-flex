@@ -1,0 +1,8 @@
+.git*
+.vscode
+local.settings.json
+test
+tests
+.funcignore
+node_modules/.cache
+*.md

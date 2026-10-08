@@ -1,0 +1,16 @@
+{
+  "name": "func-stress-comparison",
+  "version": "1.0.0",
+  "description": "HTTP stress function (CPU + memory) for Flex Consumption vs Premium comparison",
+  "main": "src/functions/*.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "func start"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.5.0",
+    "applicationinsights": "^2.9.6"
+  }
+}

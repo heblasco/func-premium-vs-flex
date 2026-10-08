@@ -1,0 +1,22 @@
+# Copy to terraform.tfvars and adjust. All values have defaults except
+# subscription_id. Run `az account show --query id -o tsv` to get it.
+
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
+# Region (must support Flex Consumption, EP1 and Azure Load Testing).
+location = "westeurope"
+
+# Short prefix for resource names (a random 4-hex suffix is added automatically).
+name_prefix = "fnvs"
+
+# Public IPv4 of the machine running terraform / func publish.
+# Leave commented to auto-discover via api.ipify.org.
+# deployer_ipv4 = "203.0.113.25"
+
+# --- Plan sizing (kept small and comparable for the demo) --------------------
+flex_instance_memory_mb              = 2048
+flex_maximum_instance_count          = 40
+flex_always_ready_count              = 0
+premium_sku_name                     = "EP1"
+premium_maximum_elastic_worker_count = 40
+premium_prewarmed_instance_count     = 1

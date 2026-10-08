@@ -1,0 +1,52 @@
+# Azure Load Testing configuration (template).
+# scripts/run-loadtest.ps1 copies this to load-test-config.generated.yaml and
+# fills in __FLEX_HOST__, __PREMIUM_HOST__, __FLEX_KEY__, __PREMIUM_KEY__,
+# __SUBNET_ID__ and __RUNID__ from Terraform outputs + function keys.
+#
+# You can also edit the generated file and run it from the portal / CI.
+
+version: v0.1
+testId: stress-comparison
+displayName: Flex vs Premium stress comparison
+testPlan: stress-comparison.jmx
+description: Identical parallel load against Flex Consumption and Premium (EP1).
+
+# Each engine runs BOTH thread groups, so one engine already hits both apps in
+# parallel. Increase for more aggregate load (watch load-test subnet IP count).
+engineInstances: 1
+
+# VNet injection so engines can reach the function private endpoints.
+subnetId: __SUBNET_ID__
+publicIPDisabled: true
+
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60
+
+failureCriteria:
+  - percentage(error) > 25
+  - avg(response_time_ms) > 45000
+
+env:
+  - name: FLEX_HOST
+    value: __FLEX_HOST__
+  - name: PREMIUM_HOST
+    value: __PREMIUM_HOST__
+  - name: FLEX_KEY
+    value: __FLEX_KEY__
+  - name: PREMIUM_KEY
+    value: __PREMIUM_KEY__
+  - name: USERS
+    value: "20"
+  - name: RAMP
+    value: "30"
+  - name: DURATION
+    value: "300"
+  - name: CPUMS
+    value: "200"
+  - name: MEMMB
+    value: "256"
+  - name: LOOPS
+    value: "1"
+  - name: RUNID
+    value: __RUNID__

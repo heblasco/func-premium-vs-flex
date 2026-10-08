@@ -1,0 +1,36 @@
+# Terraform
+infra/.terraform/
+infra/.terraform.lock.hcl
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+!**/*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Node
+node_modules/
+npm-debug.log*
+.npm/
+
+# Azure Functions
+src/local.settings.json
+src/bin/
+src/obj/
+.python_packages/
+
+# Load testing
+loadtest/load-test-config.generated.yaml
+loadtest/results/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
