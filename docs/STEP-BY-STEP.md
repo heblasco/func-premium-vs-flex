@@ -140,19 +140,24 @@ req/s) y un `runId` (`direct-...`) para correlacionar en App Insights.
 ```
 
 El script instala la extensión `load`, lee los outputs, obtiene las claves,
-renderiza `loadtest/load-test-config.generated.yaml` y crea/arranca el test con
-**VNet injection** hacia los private endpoints. Cada engine ejecuta **los dos
-thread groups** (`flex-tg` y `premium-tg`) con configuración idéntica.
+**renderiza un JMX con todos los valores incrustados como literales**
+(`loadtest/stress-comparison.generated.jmx`), genera
+`loadtest/load-test-config.generated.yaml` y crea/actualiza + arranca el test
+con **VNet injection** hacia los private endpoints. Cada engine ejecuta **los
+dos thread groups** (`flex-tg` y `premium-tg`) con configuración idéntica.
 
 > **Requisitos ALT:** `Microsoft.LoadTestService` y `Microsoft.Batch`
 > registrados (ver 0.1). La primera ejecución con VNet puede tardar unos minutos
 > en aprovisionar los engines.
 >
-> **Caveat conocido:** el JMX toma hilos/duración de variables de entorno
-> (`${__env(USERS|DURATION)}`). Según la versión del engine, el conteo de hilos
-> puede no resolverse y el run acabar con *NoRequestsSent*. Si te ocurre, usa la
-> **carga directa** (3.A) o sustituye en el JMX esos `${__env(...)}` por valores
-> literales antes de subir el test.
+> **Por qué literales (no `${__env(...)}`):** los engines de Azure Load Testing
+> **no resuelven** la función JMeter `${__env(NAME)}` en este plan: los contadores
+> del ThreadGroup acaban el run al instante (*NoRequestsSent*) y el host del
+> sampler queda como `${__env(FLEX_HOST)}` → *"Illegal character found in host:
+> '{'"*. Por eso `run-loadtest.ps1` sustituye **todos** los tokens `${__env(...)}`
+> (hilos, duración, host, clave, cpuMs, memMB, loops, runId) por su valor real
+> antes de subir el test. El JMX generado está en `.gitignore` y se sube de forma
+> privada a ALT. Resultado: el run termina en `DONE` enviando tráfico real.
 
 ### 3.1 Escenarios recomendados (comparación justa)
 
@@ -241,6 +246,6 @@ Esto elimina **todo** el grupo de recursos y sus costes asociados.
 | `/api/stress` da 401 | Falta la clave de función | Pásala en `x-functions-key` o `?code=` |
 | Flex: `listkeys` da *InternalServerError* | `AzureWebJobsStorage` con clave vacía (policy keyless) | Ya resuelto: settings `AzureWebJobsStorage__accountName/credential/clientId` + borrado del connection string (ver `functions_flex.tf`) |
 | `terraform apply` falla al refrescar storage | Storage privado no accesible por plano de datos | Usa `terraform apply -refresh=false` |
-| Load test *NoRequestsSent* | `${__env(...)}` de hilos no resuelto en el engine | Usa `run-direct-load.ps1` o literales en el JMX |
+| Load test *NoRequestsSent* / *Illegal character found in host '{'* | El engine no resolvió `${__env(...)}` | Ya resuelto: `run-loadtest.ps1` incrusta valores literales en el JMX generado. Asegúrate de usar el script (no subas `stress-comparison.jmx` a mano) |
 | Load test sin tráfico a las apps | Subnet de ALT, DNS o `Microsoft.Batch` sin registrar | Revisa `subnetId` (sin delegación), PE de funciones y providers |
 | Conteos de requests dispares en App Insights | Sampling | Ya desactivado (host.json + componente al 100%); verifica que no haya *daily cap* |

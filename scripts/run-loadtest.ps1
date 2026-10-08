@@ -55,9 +55,42 @@ if (-not $flexKey -or -not $premKey) { throw "Could not retrieve function keys."
 $runId = "run-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 $testId = "stress-comparison"
 
+# --- Render the JMeter plan with ALL values baked in as LITERALS ------------
+# Azure Load Testing engines do NOT resolve ${__env(NAME)} in this plan: the
+# JMeter __env function is left unexpanded, so ThreadGroup counts end the run
+# immediately ("NoRequestsSent") and sampler hosts become the literal string
+# "${__env(FLEX_HOST)}" -> "Illegal character found in host: '{'". To make the
+# test reliable end-to-end we substitute every ${__env(...)} token with its
+# concrete value here. The generated JMX is gitignored and uploaded privately
+# to Azure Load Testing, so baking the function keys in is acceptable.
+Write-Host "Rendering JMeter plan with literal values (users=$Users ramp=$Ramp duration=$Duration)..." -ForegroundColor Cyan
+$subst = [ordered]@{
+  USERS        = [string]$Users
+  RAMP         = [string]$Ramp
+  DURATION     = [string]$Duration
+  CPUMS        = [string]$CpuMs
+  MEMMB        = [string]$MemMB
+  LOOPS        = [string]$Loops
+  RUNID        = $runId
+  FLEX_HOST    = $flexHost
+  PREMIUM_HOST = $premHost
+  FLEX_KEY     = $flexKey
+  PREMIUM_KEY  = $premKey
+}
+$jmxRendered = Get-Content (Join-Path $LoadTestPath 'stress-comparison.jmx') -Raw
+foreach ($k in $subst.Keys) {
+  $jmxRendered = $jmxRendered.Replace('${__env(' + $k + ')}', $subst[$k])
+}
+if ($jmxRendered -match '\$\{__env\(') {
+  throw "Unresolved `${__env(...)} token remains in the generated JMX. Check scripts/run-loadtest.ps1 substitution map."
+}
+$generatedJmx = Join-Path $LoadTestPath 'stress-comparison.generated.jmx'
+Set-Content -Path $generatedJmx -Value $jmxRendered -Encoding UTF8
+
 Write-Host "Rendering load-test config (runId=$runId)..." -ForegroundColor Cyan
 $template = Get-Content (Join-Path $LoadTestPath 'load-test-config.yaml') -Raw
 $rendered = $template `
+  -replace 'testPlan:\s*stress-comparison\.jmx', 'testPlan: stress-comparison.generated.jmx' `
   -replace '__FLEX_HOST__', $flexHost `
   -replace '__PREMIUM_HOST__', $premHost `
   -replace '__FLEX_KEY__', $flexKey `
@@ -78,11 +111,21 @@ $generated = Join-Path $LoadTestPath 'load-test-config.generated.yaml'
 Set-Content -Path $generated -Value $rendered -Encoding UTF8
 
 Write-Host "Creating/updating test '$testId'..." -ForegroundColor Cyan
-az load test create `
-  --load-test-resource $ltName -g $rg `
-  --test-id $testId `
-  --load-test-config-file $generated `
-  --only-show-errors
+$exists = az load test show --load-test-resource $ltName -g $rg --test-id $testId --only-show-errors 2>$null
+if ($exists) {
+  # Update the existing test so the regenerated JMeter plan + config are uploaded.
+  az load test update `
+    --load-test-resource $ltName -g $rg `
+    --test-id $testId `
+    --load-test-config-file $generated `
+    --only-show-errors
+} else {
+  az load test create `
+    --load-test-resource $ltName -g $rg `
+    --test-id $testId `
+    --load-test-config-file $generated `
+    --only-show-errors
+}
 
 Write-Host "Starting run '$runId'..." -ForegroundColor Cyan
 az load test-run create `

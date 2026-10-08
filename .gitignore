@@ -27,6 +27,7 @@ src/obj/
 
 # Load testing
 loadtest/load-test-config.generated.yaml
+loadtest/stress-comparison.generated.jmx
 loadtest/results/
 ltlogs/
 

@@ -9,7 +9,7 @@ version: v0.1
 testId: stress-comparison
 displayName: Flex vs Premium stress comparison
 testPlan: stress-comparison.jmx
-description: Identical parallel load against Flex Consumption and Premium (EP1).
+description: Identical parallel load against Flex Consumption and the Dedicated (P0v3) plan.
 
 # Each engine runs BOTH thread groups, so one engine already hits both apps in
 # parallel. Increase for more aggregate load (watch load-test subnet IP count).

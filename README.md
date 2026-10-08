@@ -34,9 +34,10 @@ sometidos a la **misma carga en paralelo**, desplegable íntegramente con
   compartidas en ninguno de los dos planes.
 - **Observabilidad**: Log Analytics + **Application Insights** compartido
   (se distingue cada plan por `cloud_RoleName` y la dimensión `plan`).
-- **Carga**: recurso **Azure Load Testing** + plan JMeter con **dos thread
-  groups independientes**, más un generador de **carga directa** en paralelo
-  (`scripts/run-direct-load.ps1`) para resultados inmediatos.
+- **Carga**: recurso **Azure Load Testing** (JMeter con **dos thread groups
+  independientes**; `run-loadtest.ps1` incrusta los valores como literales para
+  que funcione en los engines con VNet injection), más un generador de **carga
+  directa** en paralelo (`scripts/run-direct-load.ps1`) para resultados inmediatos.
 
 Todos los recursos llevan un **UID hexadecimal aleatorio de 4 dígitos** para
 evitar colisiones de nombres.
