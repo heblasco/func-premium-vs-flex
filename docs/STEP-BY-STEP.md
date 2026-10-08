@@ -1,7 +1,13 @@
 # Guía paso a paso: desplegar, lanzar la prueba y monitorizarla
 
-Esta guía te lleva desde cero hasta tener la comparativa Flex Consumption vs
-Premium ejecutándose y monitorizada con Application Insights.
+Esta guía te lleva desde cero hasta tener la comparativa **Flex Consumption vs
+plan reservado (App Service Dedicated P0v3)** ejecutándose y monitorizada con
+Application Insights.
+
+> El lado "Premium" corre sobre un **plan Dedicated** (keyless, always-on) en
+> lugar de **Elastic Premium**, porque EP requiere un *content share* de Azure
+> Files con clave compartida y la suscripción de demo deshabilita las claves por
+> policy. Cambia `premium_sku_name` a `EP1` si tu suscripción permite claves.
 
 ---
 
@@ -15,15 +21,17 @@ Premium ejecutándose y monitorizada con Application Insights.
   az account set --subscription "<tu-subscription-id>"
   az account show --query id -o tsv   # copia este valor
   ```
-- Cuota disponible para **EP1** y **Flex Consumption** en la región elegida.
+- Cuota disponible para **Flex Consumption** y **App Service Dedicated** en la
+  región elegida.
 
 ### 0.1 Registrar resource providers (una sola vez por suscripción)
 
 Terraform no los registra (`resource_provider_registrations = "none"`). Si no lo
-están ya:
+están ya (incluye `Microsoft.Batch`, necesario para la inyección en VNet de
+Azure Load Testing):
 
 ```powershell
-foreach ($p in 'Microsoft.Web','Microsoft.App','Microsoft.Storage','Microsoft.Network','Microsoft.Insights','Microsoft.OperationalInsights','Microsoft.LoadTestService') {
+foreach ($p in 'Microsoft.Web','Microsoft.App','Microsoft.Storage','Microsoft.Network','Microsoft.Insights','Microsoft.OperationalInsights','Microsoft.LoadTestService','Microsoft.Batch') {
   az provider register --namespace $p
 }
 ```
@@ -44,14 +52,23 @@ terraform apply     # escribe 'yes'
 
 **Qué ocurre:**
 - Se crea un grupo de recursos `rg-<prefix>-<hex>` con todo dentro.
+- El **storage es keyless y privado** (sin acceso público): el contenedor de
+  despliegue de Flex se crea por **plano de control** (`azapi`) y el acceso en
+  ejecución es por **managed identity** (roles Blob/Queue/Table Data).
 - La IP pública de tu equipo se detecta automáticamente (`api.ipify.org`) y se
-  permite en el firewall del storage y en el endpoint SCM de las funciones.
-  Si estás tras proxy corporativo o IPv6, ponla a mano:
+  permite en el endpoint **SCM/sitio** de las funciones. Si estás tras proxy
+  corporativo o IPv6, ponla a mano, o fija un rango si tu IP **rota**:
   ```hcl
-  deployer_ipv4 = "203.0.113.25"
+  deployer_ipv4       = "203.0.113.25"   # o
+  deployer_allow_cidr = "167.220.0.0/16" # permite un rango corporativo
   ```
 - Las role assignments de storage se crean **antes** que las funciones y hay una
   espera de 60 s para propagación de RBAC (evita fallos de arranque).
+
+> **Nota (apply en storage privado):** como el storage no es accesible por plano
+> de datos desde tu equipo, un `terraform apply`/`plan` completo puede fallar al
+> **refrescar** propiedades de storage (static website/queue). Usa
+> `terraform apply -refresh=false` para cambios que no toquen el storage.
 
 Al terminar verás los outputs (nombres de apps, hostnames, nombre del recurso de
 Load Testing, etc.). Puedes recuperarlos cuando quieras con:
@@ -99,36 +116,56 @@ curl.exe "https://$($tf.flex_default_hostname.value)/api/stress?cpuMs=200&memMB=
 
 ---
 
-## 3. Lanzar la carga en paralelo (Azure Load Testing)
+## 3. Lanzar la carga en paralelo
+
+Tienes **dos** vías. La **carga directa** es la más rápida para ver resultados;
+**Azure Load Testing** es la opción "infra" con inyección en VNet.
+
+### 3.A Carga directa (recomendada para la demo)
+
+Golpea ambas apps a la vez desde tu equipo (requiere tu IP/CIDR permitido):
 
 ```powershell
 cd ..\scripts
+.\run-direct-load.ps1 -Workers 12 -Duration 120 -CpuMs 300 -MemMB 128 -Loops 2
+```
+
+Imprime una tabla comparativa (peticiones, éxito/error, latencia media/máx,
+req/s) y un `runId` (`direct-...`) para correlacionar en App Insights.
+
+### 3.B Azure Load Testing (VNet injection)
+
+```powershell
 .\run-loadtest.ps1 -Users 20 -Ramp 30 -Duration 300 -CpuMs 200 -MemMB 256 -Loops 1
 ```
 
-El script:
-1. Instala/actualiza la extensión `load` de Azure CLI.
-2. Lee los outputs de Terraform y obtiene las claves de función.
-3. Renderiza `loadtest/load-test-config.generated.yaml` (hosts, claves, subnet,
-   `runId`, parámetros de carga).
-4. Crea el test `stress-comparison` y **arranca una ejecución** (`runId` con
-   marca temporal) con **VNet injection** hacia los private endpoints.
+El script instala la extensión `load`, lee los outputs, obtiene las claves,
+renderiza `loadtest/load-test-config.generated.yaml` y crea/arranca el test con
+**VNet injection** hacia los private endpoints. Cada engine ejecuta **los dos
+thread groups** (`flex-tg` y `premium-tg`) con configuración idéntica.
 
-Cada engine ejecuta **los dos thread groups** (`flex-tg` y `premium-tg`) con
-configuración idéntica, de modo que ambas apps reciben la **misma carga a la
-vez**. Anota el `runId` que imprime el script: es tu clave de correlación.
+> **Requisitos ALT:** `Microsoft.LoadTestService` y `Microsoft.Batch`
+> registrados (ver 0.1). La primera ejecución con VNet puede tardar unos minutos
+> en aprovisionar los engines.
+>
+> **Caveat conocido:** el JMX toma hilos/duración de variables de entorno
+> (`${__env(USERS|DURATION)}`). Según la versión del engine, el conteo de hilos
+> puede no resolverse y el run acabar con *NoRequestsSent*. Si te ocurre, usa la
+> **carga directa** (3.A) o sustituye en el JMX esos `${__env(...)}` por valores
+> literales antes de subir el test.
 
 ### 3.1 Escenarios recomendados (comparación justa)
 
 Ejecuta runs separados y compáralos por `runId`:
 
-- **Arranque en frío**: `terraform apply` con `flex_always_ready_count = 0`,
-  deja ambas apps inactivas unos minutos y lanza un run corto. Mide la latencia
-  de las primeras peticiones (EP1 siempre está caliente; Flex puede escalar a 0).
-- **Régimen permanente**: calienta ambas apps (un run previo o `/api/health` en
-  bucle), luego aplica carga sostenida y excluye el periodo de calentamiento.
-- **Scale-out**: usa el mismo `-Ramp`/`-Users` en ambas y observa el tiempo
-  hasta throughput estable y el número de instancias.
+- **Arranque en frío**: con `flex_always_ready_count = 0`, deja ambas apps
+  inactivas unos minutos y lanza un run corto. El Dedicated está siempre
+  caliente (`always_on`); Flex puede escalar a 0.
+- **Régimen permanente**: calienta ambas apps, luego aplica carga sostenida y
+  excluye el periodo de calentamiento.
+- **Scale-out**: observa cuántas **instancias** usa cada plan (dimensión
+  `hostname` en App Insights). Sube `premium_worker_count` para dar capacidad
+  reservada al Dedicated.
 
 ---
 
@@ -154,7 +191,7 @@ Portal → **Application Insights** `appi-<prefix>-<hex>`:
 
 El coste real en **Cost Management** aparece con retraso (horas / día
 siguiente). Filtra por el grupo de recursos o la etiqueta `project=func-premium-vs-flex`
-y agrupa por recurso para separar el plan Flex del App Service Plan EP1.
+y agrupa por recurso para separar el plan Flex del App Service Plan Dedicated.
 Mientras tanto, estima con el modelo descrito en el README (medidores + duración
 y escalado observados).
 
@@ -179,8 +216,8 @@ O ajusta SKUs/escala en `terraform.tfvars` y vuelve a `terraform apply`.
   por pipeline con private endpoint. El endpoint público deja de ser necesario
   porque Azure Load Testing llega por private endpoint.
 - Lleva Application Insights/Log Analytics a **Private Link (AMPLS)**.
-- Sustituye el acceso por clave del *content share* de Premium por las opciones
-  más recientes que ofrezca la plataforma.
+- El storage ya es **keyless y privado**; mantén los roles de datos al mínimo
+  necesario (Blob/Queue/Table Data) por identidad.
 - Gestiona el estado de Terraform en un **backend remoto** (Azure Storage).
 
 ---
@@ -200,8 +237,10 @@ Esto elimina **todo** el grupo de recursos y sus costes asociados.
 
 | Síntoma | Causa probable | Acción |
 |---------|----------------|--------|
-| `func publish` da 403 | Tu IP no está permitida en SCM | Fija `deployer_ipv4` y `terraform apply` |
-| Terraform falla creando el contenedor/share | IP del deployer no permitida en storage | Igual que arriba |
-| La función Premium no arranca | Content share no accesible | Verifica PE `file`, DNS `privatelink.file` y `WEBSITE_CONTENTOVERVNET=1` |
-| Load test sin tráfico a las apps | Subnet de ALT o DNS | Revisa `subnetId`, que la subred no esté delegada y los PE de funciones |
-| Conteos de requests dispares en App Insights | Sampling | Ya está desactivado (host.json + componente al 100%); verifica que no haya *daily cap* |
+| `func publish` da 403 | Tu IP no está permitida en SCM | Fija `deployer_ipv4`/`deployer_allow_cidr` y `terraform apply -refresh=false` |
+| `/api/stress` da 401 | Falta la clave de función | Pásala en `x-functions-key` o `?code=` |
+| Flex: `listkeys` da *InternalServerError* | `AzureWebJobsStorage` con clave vacía (policy keyless) | Ya resuelto: settings `AzureWebJobsStorage__accountName/credential/clientId` + borrado del connection string (ver `functions_flex.tf`) |
+| `terraform apply` falla al refrescar storage | Storage privado no accesible por plano de datos | Usa `terraform apply -refresh=false` |
+| Load test *NoRequestsSent* | `${__env(...)}` de hilos no resuelto en el engine | Usa `run-direct-load.ps1` o literales en el JMX |
+| Load test sin tráfico a las apps | Subnet de ALT, DNS o `Microsoft.Batch` sin registrar | Revisa `subnetId` (sin delegación), PE de funciones y providers |
+| Conteos de requests dispares en App Insights | Sampling | Ya desactivado (host.json + componente al 100%); verifica que no haya *daily cap* |

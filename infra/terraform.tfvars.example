@@ -3,8 +3,10 @@
 
 subscription_id = "00000000-0000-0000-0000-000000000000"
 
-# Region (must support Flex Consumption, EP1 and Azure Load Testing).
-location = "westeurope"
+# Region (must support Flex Consumption, Dedicated plans and Azure Load Testing).
+# Note: westeurope may reject new resources ("not accepting new customers");
+# swedencentral is a good alternative.
+location = "swedencentral"
 
 # Short prefix for resource names (a random 4-hex suffix is added automatically).
 name_prefix = "fnvs"
@@ -14,9 +16,9 @@ name_prefix = "fnvs"
 # deployer_ipv4 = "203.0.113.25"
 
 # --- Plan sizing (kept small and comparable for the demo) --------------------
-flex_instance_memory_mb              = 2048
-flex_maximum_instance_count          = 40
-flex_always_ready_count              = 0
-premium_sku_name                     = "EP1"
-premium_maximum_elastic_worker_count = 40
-premium_prewarmed_instance_count     = 1
+flex_instance_memory_mb     = 2048
+flex_maximum_instance_count = 40
+flex_always_ready_count     = 0
+# "Premium" side runs on a Dedicated App Service plan (keyless, always-on).
+premium_sku_name     = "P0v3"
+premium_worker_count = 1

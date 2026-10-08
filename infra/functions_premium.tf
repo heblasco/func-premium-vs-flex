@@ -1,23 +1,26 @@
 ###############################################################################
-# Premium (Elastic Premium) function app
+# "Premium" side: Dedicated App Service plan function app
 #
-# Platform note: Elastic Premium requires an Azure Files content share, which
-# only supports a shared-key connection string (identity-based content shares
-# are not supported on this plan). Host storage therefore uses the access key,
-# while the app-level UAMI is still attached. Flex Consumption, by contrast, is
-# fully keyless - this asymmetry is itself a finding in the comparison.
-# Content-share traffic is forced over the VNet (WEBSITE_CONTENTOVERVNET=1 +
-# vnet_route_all_enabled) to the private "file" endpoint.
+# Design note / deviation: the subscription enforces keyless + private storage
+# (allowSharedKeyAccess = false). Elastic Premium (EPx) requires an Azure Files
+# content share that only supports a shared-key connection string, so it is not
+# viable here. Instead the always-on / reserved-capacity side runs on a
+# Dedicated App Service plan (default P0v3), which supports:
+#   * identity-based AzureWebJobsStorage (storage_uses_managed_identity = true)
+#   * running without the Azure Files mount (WEBSITES_ENABLE_APP_SERVICE_STORAGE
+#     = false) + always_on
+# The comparison is therefore "serverless Flex Consumption" vs "reserved,
+# always-warm Dedicated plan". Documented in the README.
 ###############################################################################
 
 resource "azurerm_service_plan" "premium" {
-  name                         = "asp-prem-${local.suffix}"
-  location                     = azurerm_resource_group.main.location
-  resource_group_name          = azurerm_resource_group.main.name
-  os_type                      = "Linux"
-  sku_name                     = var.premium_sku_name
-  maximum_elastic_worker_count = var.premium_maximum_elastic_worker_count
-  tags                         = local.tags
+  name                = "asp-ded-${local.suffix}"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  os_type             = "Linux"
+  sku_name            = var.premium_sku_name
+  worker_count        = var.premium_worker_count
+  tags                = local.tags
 }
 
 resource "azurerm_linux_function_app" "premium" {
@@ -26,8 +29,9 @@ resource "azurerm_linux_function_app" "premium" {
   resource_group_name = azurerm_resource_group.main.name
   service_plan_id     = azurerm_service_plan.premium.id
 
-  storage_account_name       = azurerm_storage_account.premium.name
-  storage_account_access_key = azurerm_storage_account.premium.primary_access_key
+  # Keyless host storage via the user-assigned managed identity.
+  storage_account_name          = azurerm_storage_account.premium.name
+  storage_uses_managed_identity = true
 
   functions_extension_version = "~4"
   https_only                  = true
@@ -43,9 +47,10 @@ resource "azurerm_linux_function_app" "premium" {
   app_settings = {
     PLAN_LABEL                     = "premium"
     FUNCTIONS_WORKER_PROCESS_COUNT = tostring(var.functions_worker_process_count)
-    # Route the Azure Files content share over the VNet to the private endpoint.
-    WEBSITE_CONTENTOVERVNET = "1"
-    WEBSITE_CONTENTSHARE    = azurerm_storage_share.premium_content.name
+    # Select the user-assigned identity for the AzureWebJobsStorage connection.
+    AzureWebJobsStorage__clientId = azurerm_user_assigned_identity.premium.client_id
+    # No Azure Files content mount: run from the local worker filesystem.
+    WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"
   }
 
   site_config {
@@ -55,9 +60,9 @@ resource "azurerm_linux_function_app" "premium" {
 
     application_insights_connection_string = azurerm_application_insights.main.connection_string
 
-    vnet_route_all_enabled    = true
-    pre_warmed_instance_count = var.premium_prewarmed_instance_count
-    minimum_tls_version       = "1.2"
+    always_on              = true
+    vnet_route_all_enabled = true
+    minimum_tls_version    = "1.2"
 
     ip_restriction_default_action = local.restrict_public ? "Deny" : "Allow"
     scm_use_main_ip_restriction   = true
@@ -75,20 +80,11 @@ resource "azurerm_linux_function_app" "premium" {
 
   depends_on = [
     time_sleep.rbac_propagation,
-    azurerm_private_endpoint.premium_blob,
-    azurerm_private_endpoint.premium_file,
-    azurerm_private_endpoint.premium_queue,
+    azurerm_private_endpoint.storage,
     azurerm_private_dns_zone_virtual_network_link.links,
   ]
 
   tags = local.tags
-
-  lifecycle {
-    ignore_changes = [
-      # The platform manages the content-share connection string app setting.
-      app_settings["WEBSITE_CONTENTAZUREFILECONNECTIONSTRING"],
-    ]
-  }
 }
 
 resource "azurerm_private_endpoint" "premium_sites" {

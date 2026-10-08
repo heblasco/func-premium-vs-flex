@@ -1,20 +1,25 @@
 ###############################################################################
 # Storage accounts
 #
-# Both accounts are network-restricted (default-deny firewall + private
-# endpoints) and only reachable from the VNet or the allow-listed deployer IP.
+# Subscription policy forces every storage account to be keyless
+# (allowSharedKeyAccess = false) and private (publicNetworkAccess = Disabled).
+# The Terraform configuration matches that policy to avoid perpetual drift:
 #
-# Runtime access to AzureWebJobsStorage is via each app's user-assigned managed
-# identity (keyless). Shared key access is left enabled because:
-#   * Terraform creates the deployment container / content share via data plane;
-#   * Premium (Elastic Premium) requires a shared-key Azure Files content share
-#     (WEBSITE_CONTENTAZUREFILECONNECTIONSTRING) - identity-based content shares
-#     are not supported on that plan. This asymmetry is documented in the README.
+#   * shared_access_key_enabled     = false  -> only Entra ID (AAD) data plane
+#   * public_network_access_enabled = false  -> only reachable via private
+#                                               endpoints from inside the VNet
+#
+# Consequences:
+#   * Runtime access to AzureWebJobsStorage is via each app's user-assigned
+#     managed identity (Blob + Queue + Table data roles, see rbac.tf).
+#   * The Flex deployment container is created through the Azure Resource
+#     Manager control plane (azapi) because the data plane is unreachable from
+#     the deployer machine.
+#   * No Azure Files content share is used. The Premium side therefore runs on
+#     a Dedicated App Service plan (keyless) instead of Elastic Premium, which
+#     would require a shared-key content share. This deviation is documented in
+#     the README.
 ###############################################################################
-
-locals {
-  deployer_ip_rules = local.deployer_ipv4 != null ? [local.deployer_ipv4] : []
-}
 
 # --- Flex Consumption storage -------------------------------------------------
 resource "azurerm_storage_account" "flex" {
@@ -26,25 +31,28 @@ resource "azurerm_storage_account" "flex" {
   account_kind                    = "StorageV2"
   min_tls_version                 = "TLS1_2"
   https_traffic_only_enabled      = true
-  shared_access_key_enabled       = true
-  public_network_access_enabled   = true
+  shared_access_key_enabled       = false
+  public_network_access_enabled   = false
+  default_to_oauth_authentication = true
   allow_nested_items_to_be_public = false
   tags                            = local.tags
+}
 
-  network_rules {
-    default_action = "Deny"
-    bypass         = ["AzureServices"]
-    ip_rules       = local.deployer_ip_rules
+# Deployment container for the Flex Consumption app. Created via the control
+# plane (azapi) because the data plane is private + keyless.
+resource "azapi_resource" "flex_deployment_container" {
+  type      = "Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01"
+  name      = "deploymentpackage"
+  parent_id = "${azurerm_storage_account.flex.id}/blobServices/default"
+
+  body = {
+    properties = {
+      publicAccess = "None"
+    }
   }
 }
 
-resource "azurerm_storage_container" "flex_deployment" {
-  name                  = "deploymentpackage"
-  storage_account_id    = azurerm_storage_account.flex.id
-  container_access_type = "private"
-}
-
-# --- Premium storage ----------------------------------------------------------
+# --- Premium (Dedicated plan) storage -----------------------------------------
 resource "azurerm_storage_account" "premium" {
   name                            = local.premium_storage_name
   resource_group_name             = azurerm_resource_group.main.name
@@ -54,127 +62,56 @@ resource "azurerm_storage_account" "premium" {
   account_kind                    = "StorageV2"
   min_tls_version                 = "TLS1_2"
   https_traffic_only_enabled      = true
-  shared_access_key_enabled       = true
-  public_network_access_enabled   = true
+  shared_access_key_enabled       = false
+  public_network_access_enabled   = false
+  default_to_oauth_authentication = true
   allow_nested_items_to_be_public = false
   tags                            = local.tags
-
-  network_rules {
-    default_action = "Deny"
-    bypass         = ["AzureServices"]
-    ip_rules       = local.deployer_ip_rules
-  }
-}
-
-# Azure Files content share for the Premium plan (required by the platform).
-resource "azurerm_storage_share" "premium_content" {
-  name               = "content-${local.suffix}"
-  storage_account_id = azurerm_storage_account.premium.id
-  quota              = 5
 }
 
 ###############################################################################
 # Private endpoints + DNS zone groups
+#
+# Identity-based AzureWebJobsStorage needs Blob, Queue and Table data access, so
+# each account gets a private endpoint for all three sub-resources.
 ###############################################################################
 
-# Flex: blob endpoint (deployment container + AzureWebJobsStorage blob access).
-resource "azurerm_private_endpoint" "flex_blob" {
-  name                = "pe-${local.flex_storage_name}-blob"
-  location            = azurerm_resource_group.main.location
-  resource_group_name = azurerm_resource_group.main.name
-  subnet_id           = azurerm_subnet.pe.id
-  tags                = local.tags
-
-  private_service_connection {
-    name                           = "psc-blob"
-    private_connection_resource_id = azurerm_storage_account.flex.id
-    subresource_names              = ["blob"]
-    is_manual_connection           = false
+locals {
+  storage_accounts = {
+    flex    = azurerm_storage_account.flex.id
+    premium = azurerm_storage_account.premium.id
   }
-
-  private_dns_zone_group {
-    name                 = "blob"
-    private_dns_zone_ids = [azurerm_private_dns_zone.zones["blob"].id]
-  }
+  # One private endpoint per (account, sub-resource) pair.
+  storage_private_endpoints = merge([
+    for acc_key, acc_id in local.storage_accounts : {
+      for sub in ["blob", "queue", "table"] :
+      "${acc_key}-${sub}" => {
+        account_id = acc_id
+        account    = acc_key
+        subresource = sub
+      }
+    }
+  ]...)
 }
 
-resource "azurerm_private_endpoint" "flex_queue" {
-  name                = "pe-${local.flex_storage_name}-queue"
+resource "azurerm_private_endpoint" "storage" {
+  for_each = local.storage_private_endpoints
+
+  name                = "pe-${var.name_prefix}-${each.value.account}-${each.value.subresource}-${local.suffix}"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   subnet_id           = azurerm_subnet.pe.id
   tags                = local.tags
 
   private_service_connection {
-    name                           = "psc-queue"
-    private_connection_resource_id = azurerm_storage_account.flex.id
-    subresource_names              = ["queue"]
+    name                           = "psc-${each.value.subresource}"
+    private_connection_resource_id = each.value.account_id
+    subresource_names              = [each.value.subresource]
     is_manual_connection           = false
   }
 
   private_dns_zone_group {
-    name                 = "queue"
-    private_dns_zone_ids = [azurerm_private_dns_zone.zones["queue"].id]
-  }
-}
-
-# Premium: blob, file (content share) and queue endpoints.
-resource "azurerm_private_endpoint" "premium_blob" {
-  name                = "pe-${local.premium_storage_name}-blob"
-  location            = azurerm_resource_group.main.location
-  resource_group_name = azurerm_resource_group.main.name
-  subnet_id           = azurerm_subnet.pe.id
-  tags                = local.tags
-
-  private_service_connection {
-    name                           = "psc-blob"
-    private_connection_resource_id = azurerm_storage_account.premium.id
-    subresource_names              = ["blob"]
-    is_manual_connection           = false
-  }
-
-  private_dns_zone_group {
-    name                 = "blob"
-    private_dns_zone_ids = [azurerm_private_dns_zone.zones["blob"].id]
-  }
-}
-
-resource "azurerm_private_endpoint" "premium_file" {
-  name                = "pe-${local.premium_storage_name}-file"
-  location            = azurerm_resource_group.main.location
-  resource_group_name = azurerm_resource_group.main.name
-  subnet_id           = azurerm_subnet.pe.id
-  tags                = local.tags
-
-  private_service_connection {
-    name                           = "psc-file"
-    private_connection_resource_id = azurerm_storage_account.premium.id
-    subresource_names              = ["file"]
-    is_manual_connection           = false
-  }
-
-  private_dns_zone_group {
-    name                 = "file"
-    private_dns_zone_ids = [azurerm_private_dns_zone.zones["file"].id]
-  }
-}
-
-resource "azurerm_private_endpoint" "premium_queue" {
-  name                = "pe-${local.premium_storage_name}-queue"
-  location            = azurerm_resource_group.main.location
-  resource_group_name = azurerm_resource_group.main.name
-  subnet_id           = azurerm_subnet.pe.id
-  tags                = local.tags
-
-  private_service_connection {
-    name                           = "psc-queue"
-    private_connection_resource_id = azurerm_storage_account.premium.id
-    subresource_names              = ["queue"]
-    is_manual_connection           = false
-  }
-
-  private_dns_zone_group {
-    name                 = "queue"
-    private_dns_zone_ids = [azurerm_private_dns_zone.zones["queue"].id]
+    name                 = each.value.subresource
+    private_dns_zone_ids = [azurerm_private_dns_zone.zones[each.value.subresource].id]
   }
 }

@@ -28,9 +28,15 @@ src/obj/
 # Load testing
 loadtest/load-test-config.generated.yaml
 loadtest/results/
+ltlogs/
+
+# Terraform plan artifacts
+infra/tfplan.out
 
 # OS / editor
 .DS_Store
 Thumbs.db
 .vscode/
 *.log
+
+infra/tfplan.bin

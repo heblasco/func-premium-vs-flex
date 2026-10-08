@@ -3,8 +3,10 @@
 ###############################################################################
 
 locals {
-  restrict_public = local.deployer_ipv4 != null
-  deployer_cidr   = local.deployer_ipv4 != null ? "${local.deployer_ipv4}/32" : null
+  restrict_public = local.deployer_ipv4 != null || var.deployer_allow_cidr != null
+  deployer_cidr = var.deployer_allow_cidr != null ? var.deployer_allow_cidr : (
+    local.deployer_ipv4 != null ? "${local.deployer_ipv4}/32" : null
+  )
 }
 
 resource "azurerm_service_plan" "flex" {
@@ -24,7 +26,7 @@ resource "azurerm_function_app_flex_consumption" "flex" {
 
   # Deployment storage via user-assigned managed identity (keyless).
   storage_container_type            = "blobContainer"
-  storage_container_endpoint        = "${azurerm_storage_account.flex.primary_blob_endpoint}${azurerm_storage_container.flex_deployment.name}"
+  storage_container_endpoint        = "${azurerm_storage_account.flex.primary_blob_endpoint}${azapi_resource.flex_deployment_container.name}"
   storage_authentication_type       = "UserAssignedIdentity"
   storage_user_assigned_identity_id = azurerm_user_assigned_identity.flex.id
 
@@ -53,8 +55,15 @@ resource "azurerm_function_app_flex_consumption" "flex" {
 
   app_settings = {
     PLAN_LABEL                            = "flex"
-    FUNCTIONS_WORKER_PROCESS_COUNT        = tostring(var.functions_worker_process_count)
     APPLICATIONINSIGHTS_CONNECTION_STRING = azurerm_application_insights.main.connection_string
+    # Identity-based AzureWebJobsStorage for the host secret/key store. The Flex
+    # resource otherwise injects a shared-key connection string with an empty
+    # AccountKey (shared keys are disabled by policy), which breaks key
+    # management. The plain AzureWebJobsStorage setting is removed afterwards by
+    # terraform_data.flex_fix_host_storage so the identity triplet takes effect.
+    AzureWebJobsStorage__accountName = azurerm_storage_account.flex.name
+    AzureWebJobsStorage__credential  = "managedidentity"
+    AzureWebJobsStorage__clientId    = azurerm_user_assigned_identity.flex.client_id
   }
 
   site_config {
@@ -75,16 +84,27 @@ resource "azurerm_function_app_flex_consumption" "flex" {
 
   depends_on = [
     time_sleep.rbac_propagation,
-    azurerm_private_endpoint.flex_blob,
-    azurerm_private_endpoint.flex_queue,
+    azapi_resource.flex_deployment_container,
+    azurerm_private_endpoint.storage,
     azurerm_private_dns_zone_virtual_network_link.links,
   ]
 
   tags = local.tags
 }
 
-# Private endpoint (subresource "sites") so VNet-injected Azure Load Testing can
-# reach the app privately. The same endpoint also serves the *.scm hostname.
+# The Flex Consumption resource injects a plain AzureWebJobsStorage connection
+# string with an empty AccountKey (shared keys disabled by policy), which breaks
+# the host secret store. Remove it so the AzureWebJobsStorage__* identity
+# settings take effect. Re-runs if the app is recreated.
+resource "terraform_data" "flex_fix_host_storage" {
+  triggers_replace = [azurerm_function_app_flex_consumption.flex.id]
+
+  provisioner "local-exec" {
+    interpreter = ["cmd", "/c"]
+    command     = "az functionapp config appsettings delete -g ${azurerm_resource_group.main.name} -n ${azurerm_function_app_flex_consumption.flex.name} --setting-names AzureWebJobsStorage -o none"
+  }
+}
+
 resource "azurerm_private_endpoint" "flex_sites" {
   count               = var.enable_function_private_endpoints ? 1 : 0
   name                = "pe-${local.flex_app_name}-sites"

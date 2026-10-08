@@ -71,6 +71,17 @@ variable "auto_discover_deployer_ip" {
   default     = true
 }
 
+variable "deployer_allow_cidr" {
+  type        = string
+  description = "Optional CIDR to allow through the function SCM/site IP restriction instead of the single auto-discovered /32. Useful when the deployer egress IP rotates within a corporate range (e.g. 167.220.0.0/16). Leave null to use the discovered /32."
+  default     = null
+
+  validation {
+    condition     = var.deployer_allow_cidr == null || can(cidrhost(var.deployer_allow_cidr, 0))
+    error_message = "deployer_allow_cidr must be a valid CIDR (e.g. 167.220.0.0/16) or null."
+  }
+}
+
 ###############################################################################
 # Flex Consumption plan
 ###############################################################################
@@ -105,29 +116,27 @@ variable "flex_runtime_version" {
 }
 
 ###############################################################################
-# Premium (Elastic Premium) plan
+# "Premium" side: Dedicated App Service plan
+#
+# Elastic Premium is not viable on subscriptions that disable storage shared
+# keys (it needs an Azure Files content share). A Dedicated plan runs keyless
+# and always-on, giving a comparable "reserved capacity" counterpart to Flex.
 ###############################################################################
 
 variable "premium_sku_name" {
   type        = string
-  description = "Elastic Premium SKU. EP1 is the cheapest (~1 vCPU / 3.5 GB) and closest to Flex 2048."
-  default     = "EP1"
+  description = "Dedicated App Service plan SKU for the 'premium' side. P0v3 (~1 vCPU / 4 GB) is the closest always-on match to Flex 2048. B-series is cheaper/burstable."
+  default     = "P0v3"
 
   validation {
-    condition     = contains(["EP1", "EP2", "EP3"], var.premium_sku_name)
-    error_message = "premium_sku_name must be EP1, EP2 or EP3."
+    condition     = contains(["P0v3", "P1v3", "P2v3", "B1", "B2", "B3"], var.premium_sku_name)
+    error_message = "premium_sku_name must be one of P0v3, P1v3, P2v3, B1, B2, B3."
   }
 }
 
-variable "premium_maximum_elastic_worker_count" {
+variable "premium_worker_count" {
   type        = number
-  description = "Premium maximum elastic (burst) worker count."
-  default     = 40
-}
-
-variable "premium_prewarmed_instance_count" {
-  type        = number
-  description = "Premium pre-warmed instances (buffer). 1 is the product default; raising it reduces cold-start at extra cost."
+  description = "Number of workers (instances) for the Dedicated plan. 1 keeps the demo cheap; raise to compare scale-out behaviour."
   default     = 1
 }
 

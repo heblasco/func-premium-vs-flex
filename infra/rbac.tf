@@ -16,6 +16,12 @@ resource "azurerm_role_assignment" "flex_queue" {
   principal_id         = azurerm_user_assigned_identity.flex.principal_id
 }
 
+resource "azurerm_role_assignment" "flex_table" {
+  scope                = azurerm_storage_account.flex.id
+  role_definition_name = "Storage Table Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.flex.principal_id
+}
+
 # --- Premium UAMI -> Premium storage -----------------------------------------
 resource "azurerm_role_assignment" "premium_blob_owner" {
   scope                = azurerm_storage_account.premium.id
@@ -29,6 +35,12 @@ resource "azurerm_role_assignment" "premium_queue" {
   principal_id         = azurerm_user_assigned_identity.premium.principal_id
 }
 
+resource "azurerm_role_assignment" "premium_table" {
+  scope                = azurerm_storage_account.premium.id
+  role_definition_name = "Storage Table Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.premium.principal_id
+}
+
 # Allow time for role assignments to propagate before the apps use the identity.
 resource "time_sleep" "rbac_propagation" {
   create_duration = "60s"
@@ -36,7 +48,9 @@ resource "time_sleep" "rbac_propagation" {
   depends_on = [
     azurerm_role_assignment.flex_blob_owner,
     azurerm_role_assignment.flex_queue,
+    azurerm_role_assignment.flex_table,
     azurerm_role_assignment.premium_blob_owner,
     azurerm_role_assignment.premium_queue,
+    azurerm_role_assignment.premium_table,
   ]
 }
