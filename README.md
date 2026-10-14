@@ -1,174 +1,186 @@
 # func-premium-vs-flex
 
-Comparativa reproducible de **coste y rendimiento** entre **Azure Functions Flex
-Consumption** y un plan **reservado always-on (App Service Dedicated, P0v3)**
-sometidos a la **misma carga en paralelo**, desplegable íntegramente con
-**Terraform** y alineada con buenas prácticas del **Well-Architected Framework
-(WAF)** de Azure.
+A reproducible **cost and performance** comparison between **Azure Functions
+Flex Consumption** and an **always-on, reserved-capacity plan (App Service
+Dedicated, P0v3)** under the **same parallel workload**. The environment is
+deployed entirely with **Terraform** and follows Azure **Well-Architected
+Framework (WAF)** practices.
 
-> Es una **demo**: las SKU son las más pequeñas y económicas posibles, pero lo
-> más comparables entre sí (Flex 2048 MB ≈ P0v3 ~1 vCPU / 4 GB).
+> This is a **demo**: it uses small, economical SKUs intended to be reasonably
+> comparable (Flex 2048 MB vs P0v3, approximately 1 vCPU / 4 GB).
 
-> **Nota sobre Elastic Premium (EP):** el diseño original usaba **Elastic
-> Premium (EP1)**. En suscripciones donde una **Azure Policy** deshabilita las
-> claves compartidas de storage (`allowSharedKeyAccess=false`) y el acceso
-> público (`publicNetworkAccess=Disabled`), EP **no es viable**: requiere un
-> *content share* de Azure Files que sólo admite cadena de conexión por clave.
-> Por eso el lado "reservado" corre sobre un **plan Dedicated** (keyless,
-> always-on). La comparación es, por tanto, **Flex Consumption (serverless)**
-> vs **plan reservado de capacidad fija**. Cambia `premium_sku_name` a `EP1` si
-> tu suscripción permite claves compartidas.
+> **Elastic Premium (EP) note:** the original design used **Elastic Premium
+> (EP1)**. In the demo subscription, **Azure Policy** disables storage shared
+> keys (`allowSharedKeyAccess=false`) and public access
+> (`publicNetworkAccess=Disabled`). EP requires an Azure Files *content share*
+> with a shared-key connection string, so this configuration uses a **Dedicated
+> plan** instead (keyless, always-on). The comparison is therefore **Flex
+> Consumption (serverless)** vs **fixed reserved capacity**. Switching to EP
+> requires infrastructure changes; changing `premium_sku_name` alone is not
+> supported by this project's configuration.
 
-## ¿Qué despliega?
+## What is deployed?
 
-- **2 Function Apps** con el **mismo código Node.js** (endpoint `/api/stress`
-  que genera carga de **CPU** y **memoria**):
-  - `*-flex-*` sobre plan **Flex Consumption (FC1)**.
-  - `*-prem-*` sobre plan **App Service Dedicated (P0v3, always-on)**.
-- **Red (WAF)**: 1 VNet con subredes dedicadas para integración de cada plan,
-  private endpoints y Azure Load Testing; **private endpoints** para storage
-  (blob/queue/table) y funciones (`sites`); **Private DNS**; storage **sin
-  acceso público** (sólo VNet).
-- **Identidad**: una **User-Assigned Managed Identity** por app, con acceso
-  **100% keyless** a storage (Blob/Queue/Table Data roles). No se usan claves
-  compartidas en ninguno de los dos planes.
-- **Observabilidad**: Log Analytics + **Application Insights** compartido
-  (se distingue cada plan por `cloud_RoleName` y la dimensión `plan`).
-- **Carga**: recurso **Azure Load Testing** (JMeter con **dos thread groups
-  independientes**; `run-loadtest.ps1` incrusta los valores como literales para
-  que funcione en los engines con VNet injection), más un generador de **carga
-  directa** en paralelo (`scripts/run-direct-load.ps1`) para resultados inmediatos.
+- **Two Function Apps** running the **same Node.js code**, with an `/api/stress`
+  endpoint that generates **CPU** and **memory** load:
+  - `*-flex-*` on **Flex Consumption (FC1)**.
+  - `*-prem-*` on **App Service Dedicated (P0v3, always-on)**.
+- **Networking (WAF)**: one VNet with separate subnets for each plan's
+  integration, private endpoints, and Azure Load Testing; storage
+  **private endpoints** (blob/queue/table), function private endpoints (`sites`),
+  and **Private DNS**. Storage has **no public access**.
+- **Identity**: one **user-assigned managed identity** per app, with
+  **keyless** storage access through Blob/Queue/Table data roles. Neither plan
+  uses storage shared keys.
+- **Observability**: Log Analytics and a shared **Application Insights**
+  component, distinguishing plans by `cloud_RoleName` and the `plan` dimension.
+- **Load generation**: **Azure Load Testing** with JMeter and **two independent
+  thread groups**. `run-loadtest.ps1` embeds literal values for VNet-injected
+  engines. A parallel **direct-load** generator
+  (`scripts/run-direct-load.ps1`) also provides immediate results.
 
-Todos los recursos llevan un **UID hexadecimal aleatorio de 4 dígitos** para
-evitar colisiones de nombres.
+Resource names include a **random four-digit hexadecimal suffix** to avoid
+naming collisions.
 
-## Arquitectura
+## Architecture
 
-```
-                         ┌───────────────────────────── VNet 10.60.0.0/22 ─────────────────────────────┐
-                         │                                                                              │
-  Azure Load Testing ───┼──► snet-loadtest (VNet injection) ──► PE funciones (privatelink.azurewebsites)│
-   (engines JMeter)      │                                        │              │                      │
-                         │   snet-flex-integ ◄── VNet integ ── Flex app          │                      │
-                         │   snet-premium-integ ◄ VNet integ ─ Dedicated app     │                      │
-                         │   snet-pe: PE blob/queue/table (storage) ◄────────────┘                      │
-                         └──────────────────────────────────────────────────────────────────────────────┘
-        Deployer IP ─(SCM, IP-restringido)─► Function Apps (público solo para publicar código)
-   App Insights / Log Analytics ◄── trazas de ambas apps
-```
+[![Architecture showing parallel load testing of Flex and Dedicated Function Apps, private endpoints and VNet integration, separate keyless storage accounts, and shared Application Insights and Log Analytics.](docs/assets/architecture.png)](docs/assets/architecture.png)
 
-## Prerrequisitos
+The default VNet address space is `10.60.0.0/22`. Azure Load Testing engines
+use `snet-loadtest` to reach the function `sites` private endpoints in `snet-pe`.
+The apps connect to their separate storage accounts through `snet-flex-integ`
+and `snet-premium-integ`, then the blob/queue/table private endpoints in
+`snet-pe`. VNet-linked Private DNS resolves `privatelink.azurewebsites.net`
+and the storage endpoints.
 
-- Terraform ≥ 1.9, Azure CLI, Node.js 20+, Azure Functions Core Tools v4, `gh`.
-- Sesión iniciada: `az login` y una suscripción con cuota para Flex + Dedicated.
-- Providers registrados: `Microsoft.LoadTestService` y `Microsoft.Batch`
-  (este último para la inyección en VNet de Azure Load Testing). Se registran
-  con `az provider register --namespace <ns>`.
-- Región que soporte **Flex Consumption**, **App Service** y **Azure Load
-  Testing**. `westeurope` puede rechazar recursos nuevos ("not accepting new
-  customers"); `swedencentral` es una buena alternativa.
+The deployer's allowed IP/CIDR reaches the public site and SCM endpoints for
+direct tests and code publishing. Both apps send telemetry to shared Application
+Insights and Log Analytics. The diagram represents the repository's default
+configuration, not a live Azure inventory.
 
-## Inicio rápido
+The diagram uses [official Azure architecture icons](https://learn.microsoft.com/en-us/azure/architecture/icons/)
+from Microsoft's V24 icon set. The icons are embedded in the editable source,
+so no external image downloads are required. Their use is subject to the
+[Microsoft icon terms and usage guidelines](https://learn.microsoft.com/en-us/azure/architecture/icons/#icon-terms).
+
+To update the diagram, open the editable source in Excalidraw-MS and export a
+PNG with a light background. Keep `architecture.excalidraw` and
+`architecture.png` together and update both when the architecture changes.
+
+## Prerequisites
+
+- Terraform >= 1.9, Azure CLI, Node.js 20+, Azure Functions Core Tools v4, `gh`.
+- An authenticated session (`az login`) and a subscription with quota for Flex
+  and Dedicated.
+- Registered providers: `Microsoft.LoadTestService` and `Microsoft.Batch`
+  (the latter is required for Azure Load Testing VNet injection). Register them
+  with `az provider register --namespace <ns>`.
+- A region supporting **Flex Consumption**, **App Service**, and **Azure Load
+  Testing**. `westeurope` may reject new resources ("not accepting new
+  customers"); `swedencentral` is an alternative.
+
+## Quick start
 
 ```powershell
-# 1) Infraestructura
+# 1) Infrastructure
 cd infra
-cp terraform.tfvars.example terraform.tfvars   # edita subscription_id / location
+cp terraform.tfvars.example terraform.tfvars   # Edit subscription_id / location
 terraform init
 terraform apply
 
-# 2) Publicar el código en ambas apps
+# 2) Publish the code to both apps
 ..\scripts\deploy.ps1
 
-# 3a) Carga directa en paralelo (resultados inmediatos; requiere IP/CIDR permitido)
+# 3a) Parallel direct load (immediate results; requires an allowed IP/CIDR)
 ..\scripts\run-direct-load.ps1 -Workers 12 -Duration 120 -CpuMs 300 -MemMB 128 -Loops 2
 
-# 3b) O carga vía Azure Load Testing (inyección en VNet, private endpoints)
+# 3b) Or use Azure Load Testing (VNet injection and private endpoints)
 ..\scripts\run-loadtest.ps1 -Users 20 -Duration 300 -CpuMs 200 -MemMB 256
 ```
 
-> Si tu IP pública de salida **rota** dentro de un rango corporativo, fija
-> `deployer_allow_cidr` (p. ej. `167.220.0.0/16`) en `terraform.tfvars` para que
-> la restricción por IP del endpoint público no te bloquee entre despliegues.
+> If your public outbound IP **rotates** within a corporate range, set
+> `deployer_allow_cidr` (for example, `167.220.0.0/16`) in `terraform.tfvars`
+> so public endpoint IP restrictions do not block you between deployments.
 
-La guía detallada paso a paso está en **[docs/STEP-BY-STEP.md](docs/STEP-BY-STEP.md)**
-y las consultas de monitorización en **[docs/kql-queries.md](docs/kql-queries.md)**.
+See the detailed **[step-by-step guide](docs/STEP-BY-STEP.md)** and the
+**[monitoring queries](docs/kql-queries.md)**.
 
-## Variables principales (con valores por defecto)
+## Main variables and defaults
 
-| Variable | Defecto | Descripción |
+| Variable | Default | Description |
 |----------|---------|-------------|
-| `subscription_id` | — (obligatoria) | Suscripción destino |
-| `location` | `westeurope` | Región |
-| `name_prefix` | `fnvs` | Prefijo de nombres (+ sufijo hex aleatorio) |
-| `flex_instance_memory_mb` | `2048` | Memoria por instancia Flex (512/2048/4096) |
-| `flex_maximum_instance_count` | `40` | Escalado máximo Flex |
-| `flex_always_ready_count` | `0` | Instancias always-ready Flex (0 = escala a cero) |
-| `premium_sku_name` | `P0v3` | SKU plan Dedicated (P0v3/P1v3/P2v3/B1/B2/B3) |
-| `premium_worker_count` | `1` | Nº de instancias del plan Dedicated |
-| `enable_function_private_endpoints` | `true` | PE en las funciones |
-| `deployer_ipv4` | auto | IP pública permitida en SCM/sitio (auto-descubierta) |
-| `deployer_allow_cidr` | `null` | CIDR permitido en vez de la /32 (IP rotatoria) |
+| `subscription_id` | Required | Target subscription |
+| `location` | `westeurope` | Azure region |
+| `name_prefix` | `fnvs` | Name prefix, followed by a random hexadecimal suffix |
+| `flex_instance_memory_mb` | `2048` | Memory per Flex instance (512/2048/4096 MB) |
+| `flex_maximum_instance_count` | `40` | Maximum Flex instance count |
+| `flex_always_ready_count` | `0` | Always-ready Flex instances (0 allows scale-to-zero) |
+| `premium_sku_name` | `P0v3` | Dedicated plan SKU (P0v3/P1v3/P2v3/B1/B2/B3) |
+| `premium_worker_count` | `1` | Dedicated plan instance count |
+| `enable_function_private_endpoints` | `true` | Enable function private endpoints |
+| `deployer_ipv4` | Auto-detected | Public IP allowed on the site and SCM endpoints |
+| `deployer_allow_cidr` | `null` | Allowed CIDR instead of a /32, for rotating outbound IPs |
 
-Lista completa en `infra/variables.tf`.
+See `infra/variables.tf` for the full list.
 
-## Notas de alineación con WAF
+## WAF alignment notes
 
-- **Seguridad**: storage **sin acceso público** (sólo private endpoints
-  blob/queue/table desde la VNet), **claves compartidas deshabilitadas**
-  (acceso keyless vía managed identity y RBAC de datos), private endpoints en
-  las funciones (`sites`), TLS 1.2 mínimo, HTTPS obligatorio.
-- **Keyless en ambos planes**: tanto Flex como el plan Dedicated usan
-  `AzureWebJobsStorage` por **identidad** (`__accountName` + `managedidentity` +
-  `__clientId`). El contenedor de despliegue de Flex se crea por **plano de
-  control** (`azapi`) porque el plano de datos es privado.
-- **Desviación documentada (Dedicated vs Elastic Premium)**: EP requiere un
-  *content share* de Azure Files con clave compartida, incompatible con la
-  policy de la suscripción. Se usa un **plan Dedicated** (always-on, run
-  from-local, `WEBSITES_ENABLE_APP_SERVICE_STORAGE=false`). Diferencia inherente
-  a tener en cuenta: Flex escala a cero y elásticamente; el Dedicated mantiene
-  **capacidad fija** (`premium_worker_count`).
-- **Despliegue de código**: el endpoint público de las funciones queda
-  **restringido por IP** al deployer (o a `deployer_allow_cidr`); el tráfico de
-  Azure Load Testing llega por **private endpoint**. Para producción, deshabilita
-  el acceso público (ver STEP-BY-STEP).
+- **Security**: storage has **no public access**, using blob/queue/table private
+  endpoints from the VNet. **Shared keys are disabled**; access uses managed
+  identity and data-plane RBAC. Functions have `sites` private endpoints,
+  require HTTPS, and enforce TLS 1.2 or later.
+- **Both plans are keyless**: Flex and Dedicated use identity-based
+  `AzureWebJobsStorage`. The Flex deployment container is created through the
+  **control plane** (`azapi`) because the data plane is private.
+- **Documented deviation (Dedicated vs Elastic Premium)**: EP requires an
+  Azure Files content share using a shared key, incompatible with the demo
+  subscription's policy. The **Dedicated plan** is always-on, runs from local
+  storage, and sets `WEBSITES_ENABLE_APP_SERVICE_STORAGE=false`. Flex scales
+  elastically and can scale to zero; Dedicated keeps **fixed capacity**
+  (`premium_worker_count`).
+- **Code deployment**: the functions' public endpoints are **IP-restricted**
+  to the deployer or `deployer_allow_cidr`. Azure Load Testing traffic arrives
+  through **private endpoints**. For production, disable public access as
+  described in the step-by-step guide.
 
-## Metodología de comparación
+## Comparison methodology
 
-El coste de Azure Cost Management tiene **retraso** (horas/día siguiente). Para
-una comparación honesta se combinan:
+Azure Cost Management data is **delayed** by hours or until the next day.
+A meaningful comparison combines:
 
-1. **Rendimiento** (fuente primaria): métricas de **Azure Load Testing** o del
-   generador de **carga directa**, más las **métricas servidor** de Application
-   Insights (`stress_completed` con `durationMs` y `rssMB`) por dimensión `plan`.
-2. **Coste**: modelo según medidores documentados + duración/escalado observados,
-   y validación posterior con Cost Management (etiqueta `project`).
+1. **Performance** (primary source): **Azure Load Testing** or **direct-load**
+   client metrics, plus Application Insights **server metrics**
+   (`stress_duration_ms` and `stress_rss_bytes`) and `stress_completed`
+   events, grouped by `plan`. The event includes `durationMs`; `rssMB` is
+   returned in the HTTP response, not in that event.
+2. **Cost**: an estimate based on documented meters and observed duration and
+   scaling, validated later with Cost Management using the `project` tag.
 
-### Resultado de ejemplo (demo real)
+### Example results from a demo run
 
-Carga directa, 12 workers/app, 120 s, `cpuMs=300 memMB=128 loops=2`:
+Direct load: 12 workers per app, 120 seconds, `cpuMs=300 memMB=128 loops=2`:
 
-| Plan | Peticiones | Avg (cliente) | Avg server (AI) | Instancias | Throughput |
-|------|-----------:|--------------:|----------------:|-----------:|-----------:|
-| Flex Consumption | 625 | 2359 ms | 667 ms | **6** (scale-out) | 5,2 req/s |
-| Dedicated P0v3 (1 worker) | 165 | 8779 ms | 734 ms | **1** (fija) | 1,4 req/s |
+| Plan | Requests | Avg client latency | Avg server duration (AI) | Instances | Throughput |
+|------|---------:|-------------------:|------------------------:|----------:|-----------:|
+| Flex Consumption | 625 | 2359 ms | 667 ms | **6** (scale-out) | 5.2 req/s |
+| Dedicated P0v3 (1 worker) | 165 | 8779 ms | 734 ms | **1** (fixed) | 1.4 req/s |
 
-Lectura: el **tiempo de cómputo por invocación** es muy parecido (SKU
-comparables), pero **Flex escala out** bajo ráfaga mientras el Dedicated de 1
-instancia se **satura** y encola las peticiones. Sube `premium_worker_count`
-para comparar el scale-out a capacidad reservada.
+The **compute time per invocation** is similar, but **Flex scales out** under
+bursty load while the single Dedicated instance **saturates** and queues
+requests. Increase `premium_worker_count` to compare against more reserved
+capacity.
 
-## Estructura
+## Repository structure
 
-```
-infra/      Terraform (red, storage, identidad, funciones, monitorización, load test)
-src/        Función Node.js compartida (stress + health)
-loadtest/   Plan JMeter + plantilla de configuración de Azure Load Testing
+```text
+infra/      Terraform: networking, storage, identities, functions, monitoring, load testing
+src/        Shared Node.js functions: stress + health
+loadtest/   JMeter plan and Azure Load Testing configuration template
 scripts/    build.ps1, deploy.ps1, run-loadtest.ps1, run-direct-load.ps1
-docs/       Guía paso a paso + consultas KQL
+docs/       Step-by-step guide, KQL queries, and architecture assets
 ```
 
-## Limpieza
+## Cleanup
 
 ```powershell
 cd infra
