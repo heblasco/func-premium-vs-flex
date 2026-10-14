@@ -22,3 +22,20 @@ flex_always_ready_count     = 0
 # "Premium" side runs on a Dedicated App Service plan (keyless, always-on).
 premium_sku_name     = "P0v3"
 premium_worker_count = 1
+
+# Optional third arm: EP1 WITHOUT Azure Files. Read docs/STARTUP-COMPARISON.md.
+# Stage 1 creates private storage/identity/networking only (no EP compute yet).
+# enable_elastic_premium = true
+# ep_publisher_principal_id = "<private-executor-object-id>"
+# Stage 2: upload from the private executor, then set the printed SHA256.
+# ep_package_sha256 = "<64-character-lowercase-sha256>"
+# ep_minimum_instances = 1
+# ep_prewarmed_instances = 1
+# ep_maximum_instances = 3
+
+# Optional private managed-identity VM for publication and verification.
+# No public VM IP or SSH ingress; outbound-only NAT has a separate charge.
+# enable_verification_runner = true
+# verification_ssh_public_key_path = "C:\\keys\\verification.pub"
+# flex_runtime_version = "22"
+# premium_node_version = "22"

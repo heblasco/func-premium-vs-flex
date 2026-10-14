@@ -12,12 +12,13 @@ Framework (WAF)** practices.
 > **Elastic Premium (EP) note:** the original design used **Elastic Premium
 > (EP1)**. In the demo subscription, **Azure Policy** disables storage shared
 > keys (`allowSharedKeyAccess=false`) and public access
-> (`publicNetworkAccess=Disabled`). EP requires an Azure Files *content share*
-> with a shared-key connection string, so this configuration uses a **Dedicated
-> plan** instead (keyless, always-on). The comparison is therefore **Flex
-> Consumption (serverless)** vs **fixed reserved capacity**. Switching to EP
-> requires infrastructure changes; changing `premium_sku_name` alone is not
-> supported by this project's configuration.
+> (`publicNetworkAccess=Disabled`). The usual EP Azure Files *content share*
+> requires a shared-key connection string, so the **default** configuration uses
+> a **Dedicated plan** instead (keyless, always-on). An **optional third EP1 app**
+> now supports an external private Blob package with managed identity, **without
+> Azure Files**, subject to Microsoft's scaling limitations for that pattern.
+> Changing `premium_sku_name` alone still does not switch the legacy app to EP.
+> See the [startup/readiness experiment](docs/STARTUP-COMPARISON.md).
 
 ## What is deployed?
 
@@ -69,7 +70,7 @@ PNG with a light background. Keep `architecture.excalidraw` and
 
 ## Prerequisites
 
-- Terraform >= 1.9, Azure CLI, Node.js 20+, Azure Functions Core Tools v4, `gh`.
+- Terraform >= 1.9, Azure CLI, Node.js 22+, Azure Functions Core Tools v4, `gh`.
 - An authenticated session (`az login`) and a subscription with quota for Flex
   and Dedicated.
 - Registered providers: `Microsoft.LoadTestService` and `Microsoft.Batch`
@@ -80,6 +81,11 @@ PNG with a light background. Keep `architecture.excalidraw` and
   customers"); `swedencentral` is an alternative.
 
 ## Quick start
+
+For the complete **three-arm private demo**, start with the
+**[deployment, rebuild and demo runbook](docs/DEPLOYMENT-RUNBOOK.md)**. It covers
+the private VM, EP's two-phase deployment, repeat demos, backups and safe cleanup.
+The abbreviated workflow below is for the original two-arm public-SCM path.
 
 ```powershell
 # 1) Infrastructure
@@ -132,9 +138,10 @@ See `infra/variables.tf` for the full list.
 - **Both plans are keyless**: Flex and Dedicated use identity-based
   `AzureWebJobsStorage`. The Flex deployment container is created through the
   **control plane** (`azapi`) because the data plane is private.
-- **Documented deviation (Dedicated vs Elastic Premium)**: EP requires an
-  Azure Files content share using a shared key, incompatible with the demo
-  subscription's policy. The **Dedicated plan** is always-on, runs from local
+- **Documented default (Dedicated vs Elastic Premium)**: the default EP Azure
+  Files deployment uses a shared key, incompatible with the demo subscription's
+  policy. The optional EP app instead uses a private external Blob package with
+  managed identity. The default **Dedicated plan** is always-on, runs from local
   storage, and sets `WEBSITES_ENABLE_APP_SERVICE_STORAGE=false`. Flex scales
   elastically and can scale to zero; Dedicated keeps **fixed capacity**
   (`premium_worker_count`).
@@ -155,6 +162,31 @@ A meaningful comparison combines:
    returned in the HTTP response, not in that event.
 2. **Cost**: an estimate based on documented meters and observed duration and
    scaling, validated later with Cost Management using the `project` tag.
+
+### Startup, always-ready and real EP prewarmed-buffer comparison
+
+The [startup comparison guide](docs/STARTUP-COMPARISON.md) adds opt-in EP1
+infrastructure and a reproducible runner for idle first-hit, warm baseline and
+burst scenarios. Compare Flex HTTP always-ready **0 vs 1** with EP **minimum=1,
+prewarmed buffer=1**, retaining Dedicated as an optional reference.
+
+Use the [operational runbook](docs/DEPLOYMENT-RUNBOOK.md) to recreate the verified
+private environment or prepare it for another demo.
+
+```powershell
+# After deploying the updated code and optional EP app:
+.\scripts\run-startup-comparison.ps1 -Scenario warm-baseline -Samples 100
+.\scripts\run-startup-comparison.ps1 -Scenario burst -Workers 12 -DurationSeconds 120 -CpuMs 200
+```
+
+Results include **every invocation**, failures, client/handler latency, process
+and instance identifiers, per-cycle tables, and aggregate metrics in Markdown
+and JSON. A first-in-process flag is **not proof of cold start**, and an idle
+probe does not exercise EP's scale-out buffer. EP deployment requires a
+private-network package publisher; it is disabled by default. The optional
+managed-identity verification VM now supports private publication and durable
+invocation artifacts. Azure verification on 2026-10-14 demonstrated all three
+arms and concurrent EP scale-out; see the guide for results and limitations.
 
 ### Example results from a demo run
 

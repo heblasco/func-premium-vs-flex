@@ -105,22 +105,26 @@ variable "flex_maximum_instance_count" {
 
 variable "flex_always_ready_count" {
   type        = number
-  description = "Flex always-ready instances for the stress function (0 = scale to zero / cold starts)."
+  description = "Flex always-ready instances for the HTTP scale group (0 permits scale-to-zero)."
   default     = 0
+
+  validation {
+    condition     = var.flex_always_ready_count >= 0 && var.flex_always_ready_count <= 20 && floor(var.flex_always_ready_count) == var.flex_always_ready_count
+    error_message = "flex_always_ready_count must be an integer from 0 to 20."
+  }
 }
 
 variable "flex_runtime_version" {
   type        = string
   description = "Node runtime version for Flex Consumption."
-  default     = "20"
+  default     = "22"
 }
 
 ###############################################################################
 # "Premium" side: Dedicated App Service plan
 #
-# Elastic Premium is not viable on subscriptions that disable storage shared
-# keys (it needs an Azure Files content share). A Dedicated plan runs keyless
-# and always-on, giving a comparable "reserved capacity" counterpart to Flex.
+# This legacy arm remains Dedicated. The optional EP arm uses a private Blob
+# package without Azure Files; see functions_elastic_premium.tf.
 ###############################################################################
 
 variable "premium_sku_name" {
@@ -143,7 +147,7 @@ variable "premium_worker_count" {
 variable "premium_node_version" {
   type        = string
   description = "Node runtime version for the Premium Linux function app."
-  default     = "20"
+  default     = "22"
 }
 
 ###############################################################################
@@ -164,4 +168,56 @@ variable "enable_load_testing" {
   type        = bool
   description = "Create the Azure Load Testing resource. The JMeter test itself is created via scripts/run-loadtest.ps1 (data-plane)."
   default     = true
+}
+
+variable "enable_elastic_premium" {
+  type        = bool
+  default     = false
+  description = "Opt in to separate keyless EP infrastructure. With no package hash, create bootstrap resources only."
+}
+
+variable "ep_package_sha256" {
+  type        = string
+  default     = null
+  description = "SHA256 of an already-uploaded immutable deploymentpackage/<hash>.zip. Null defers EP plan/app creation."
+  validation {
+    condition     = var.ep_package_sha256 == null ? true : can(regex("^[a-f0-9]{64}$", var.ep_package_sha256))
+    error_message = "ep_package_sha256 must be null or a lowercase SHA256 hash."
+  }
+}
+
+variable "ep_publisher_principal_id" {
+  type        = string
+  default     = null
+  description = "Optional external publisher object ID for container-scoped Blob Data Contributor. The built-in verification runner receives its own assignment."
+}
+
+variable "ep_minimum_instances" {
+  type        = number
+  default     = 1
+  description = "Always-ready EP instances; billed baseline."
+  validation {
+    condition     = var.ep_minimum_instances >= 1 && var.ep_minimum_instances <= var.ep_maximum_instances && floor(var.ep_minimum_instances) == var.ep_minimum_instances
+    error_message = "EP minimum must be an integer from 1 to ep_maximum_instances."
+  }
+}
+
+variable "ep_prewarmed_instances" {
+  type        = number
+  default     = 1
+  description = "EP HTTP scale-out buffer, billed when allocated; not an idle minimum."
+  validation {
+    condition     = var.ep_prewarmed_instances >= 1 && var.ep_prewarmed_instances <= var.ep_maximum_instances && floor(var.ep_prewarmed_instances) == var.ep_prewarmed_instances
+    error_message = "EP prewarmed count must be an integer from 1 to ep_maximum_instances."
+  }
+}
+
+variable "ep_maximum_instances" {
+  type        = number
+  default     = 3
+  description = "Bounded EP app scale-out and plan maximum elastic workers (1-20)."
+  validation {
+    condition     = var.ep_maximum_instances >= 1 && var.ep_maximum_instances <= 20 && floor(var.ep_maximum_instances) == var.ep_maximum_instances
+    error_message = "EP maximum must be an integer from 1 to 20."
+  }
 }

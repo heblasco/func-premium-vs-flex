@@ -30,6 +30,8 @@ loadtest/load-test-config.generated.yaml
 loadtest/stress-comparison.generated.jmx
 loadtest/results/
 ltlogs/
+loadtest/startup-results/
+src/artifacts/
 
 # Terraform plan artifacts
 infra/tfplan.out
@@ -41,3 +43,5 @@ Thumbs.db
 *.log
 
 infra/tfplan.bin
+__pycache__/
+.azure/*-plan.txt

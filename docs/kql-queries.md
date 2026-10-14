@@ -3,7 +3,12 @@
 Run these queries in **Application Insights > Logs**. Adjust `runId` and the
 time window to match your run. Both apps share the same component and are
 distinguished by `cloud_RoleName` (the app name) and the custom `plan` dimension
-(`flex` / `premium`).
+(`flex` / legacy Dedicated `premium` / optional `elastic-premium`).
+
+For the startup runner, use sections 10-12 on **custom events**. The application
+sets `runId`, `phase` and `sampleId` on `stress_completed`; auto-collected
+`requests` do not automatically inherit these fields. Earlier request queries
+require request enrichment or adaptation to filter by role/time instead.
 
 > Tip: set `runId` to the value printed by `run-loadtest.ps1`.
 
@@ -128,6 +133,89 @@ requests
 ```
 
 ---
+
+## 10. Startup invocation table (server evidence)
+
+Copy the exact shared run ID from `manifest.json`. The client JSONL is the
+authoritative record, including failures before the handler. Events can arrive
+late or be lost; absence is not evidence of scale-to-zero.
+
+```kusto
+let selectedRun = "startup-<uuid>";
+customEvents
+| where timestamp > ago(24h)
+| where name == "stress_completed"
+| where tostring(customDimensions.runId) == selectedRun
+| extend
+    plan = tostring(customDimensions.plan),
+    phase = tostring(customDimensions.phase),
+    sampleId = tostring(customDimensions.sampleId),
+    invocationId = tostring(customDimensions.invocationId),
+    instanceId = tostring(customDimensions.instanceId),
+    instanceIdSource = tostring(customDimensions.instanceIdSource),
+    processBootId = tostring(customDimensions.processBootId),
+    firstInProcess = tobool(customDimensions.firstInProcess),
+    sequence = tolong(customMeasurements.invocationSequence),
+    processUptimeMs = todouble(customMeasurements.processUptimeMs),
+    handlerMs = todouble(customMeasurements.durationMs)
+| project timestamp, plan, phase, sampleId, invocationId, handlerMs,
+          instanceId, instanceIdSource, processBootId, firstInProcess,
+          sequence, processUptimeMs
+| order by timestamp asc
+```
+
+## 11. Startup handler summary by plan and cohort
+
+These are **handler times**, not client latency or startup durations.
+Probe tails are intentionally null; use the per-invocation table for idle cycles.
+Use client artifacts for HTTP/network errors and end-to-end percentiles.
+
+```kusto
+let selectedRun = "startup-<uuid>";
+customEvents
+| where timestamp > ago(24h) and name == "stress_completed"
+| where tostring(customDimensions.runId) == selectedRun
+| extend plan = tostring(customDimensions.plan),
+         phase = tostring(customDimensions.phase),
+         firstInProcess = tobool(customDimensions.firstInProcess),
+         handlerMs = todouble(customMeasurements.durationMs),
+         boot = tostring(customDimensions.processBootId),
+         instanceId = tostring(customDimensions.instanceId)
+| where phase != "warmup"
+| summarize events = count(),
+            handler_min_ms = min(handlerMs),
+            handler_p50_ms = percentile(handlerMs, 50),
+            handler_p95_ms = percentile(handlerMs, 95),
+            handler_max_ms = max(handlerMs),
+            observed_processes = dcount(boot),
+            observed_host_ids = dcount(instanceId)
+    by plan, phase, firstInProcess
+| extend handler_p95_ms = iff(phase == "probe", real(null), handler_p95_ms)
+| order by plan asc, phase asc, firstInProcess desc
+```
+
+KQL percentiles/distinct counts can be approximate and differ from the local
+nearest-rank/exact calculations. Do not sum overlapping local `all`/cohort rows.
+
+## 12. Observed hosts over time during burst
+
+```kusto
+let selectedRun = "startup-<uuid>";
+customEvents
+| where timestamp > ago(24h) and name == "stress_completed"
+| where tostring(customDimensions.runId) == selectedRun
+| where tostring(customDimensions.phase) == "burst"
+| extend plan = tostring(customDimensions.plan),
+         instanceId = tostring(customDimensions.instanceId),
+         idSource = tostring(customDimensions.instanceIdSource)
+| summarize observed_host_ids = dcount(instanceId) by plan, idSource, bin(timestamp, 10s)
+| render timechart
+```
+
+Multiple IDs in a time bin are a **hint**, not proof of concurrent active capacity
+or prewarmed allocation; replacement can produce the same pattern. Corroborate
+with overlapping activity and platform scaling evidence. If EP scale-out is
+not established, label the buffer experiment inconclusive, not successful.
 
 ### Notes
 

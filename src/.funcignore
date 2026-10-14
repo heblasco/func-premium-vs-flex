@@ -3,6 +3,7 @@
 local.settings.json
 test
 tests
+artifacts
 .funcignore
 node_modules/.cache
 *.md

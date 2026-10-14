@@ -18,6 +18,7 @@ try {
   } else {
     npm install --omit=dev
   }
+  if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed; do not publish the package.' }
   Write-Host "Build/install complete." -ForegroundColor Green
 } finally {
   Pop-Location

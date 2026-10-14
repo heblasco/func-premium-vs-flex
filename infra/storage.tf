@@ -15,10 +15,9 @@
 #   * The Flex deployment container is created through the Azure Resource
 #     Manager control plane (azapi) because the data plane is unreachable from
 #     the deployer machine.
-#   * No Azure Files content share is used. The Premium side therefore runs on
-#     a Dedicated App Service plan (keyless) instead of Elastic Premium, which
-#     would require a shared-key content share. This deviation is documented in
-#     the README.
+#   * No Azure Files content share is used. The legacy Premium-named side is
+#     Dedicated. Optional Elastic Premium uses an external private Blob package
+#     with managed identity; see functions_elastic_premium.tf.
 ###############################################################################
 
 # --- Flex Consumption storage -------------------------------------------------
@@ -86,8 +85,8 @@ locals {
     for acc_key, acc_id in local.storage_accounts : {
       for sub in ["blob", "queue", "table"] :
       "${acc_key}-${sub}" => {
-        account_id = acc_id
-        account    = acc_key
+        account_id  = acc_id
+        account     = acc_key
         subresource = sub
       }
     }

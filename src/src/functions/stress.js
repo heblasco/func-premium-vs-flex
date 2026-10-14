@@ -1,6 +1,7 @@
 const { app } = require('@azure/functions');
 const crypto = require('crypto');
 const os = require('os');
+const { observeInvocation } = require('../lifecycle');
 
 // Shared Application Insights client. On Azure Functions the platform already
 // ingests request/trace telemetry when APPLICATIONINSIGHTS_CONNECTION_STRING is
@@ -85,6 +86,7 @@ app.http('stress', {
   route: 'stress',
   handler: async (request, context) => {
     const started = Date.now();
+    const lifecycle = observeInvocation();
     const url = new URL(request.url);
     const q = url.searchParams;
 
@@ -93,6 +95,8 @@ app.http('stress', {
     const memMB = clampInt(q.get('memMB'), 128, 0, 512);
     const loops = clampInt(q.get('loops'), 1, 1, 50);
     const runId = q.get('runId') || 'adhoc';
+    const phase = q.get('phase') || 'adhoc';
+    const sampleId = q.get('sampleId') || context.invocationId;
 
     let totalRounds = 0;
     let lastDigest = '';
@@ -120,12 +124,27 @@ app.http('stress', {
       memMB: String(memMB),
       loops: String(loops),
       hostname: os.hostname(),
+      phase,
+      sampleId,
+      invocationId: context.invocationId,
+      processBootId: lifecycle.processBootId,
+      instanceId: lifecycle.instanceId,
+      instanceIdSource: lifecycle.instanceIdSource,
+      firstInProcess: String(lifecycle.firstInProcess),
     };
 
     if (aiClient) {
       aiClient.trackMetric({ name: 'stress_duration_ms', value: durationMs, properties: dims });
       aiClient.trackMetric({ name: 'stress_rss_bytes', value: mem.rss, properties: dims });
-      aiClient.trackEvent({ name: 'stress_completed', properties: dims, measurements: { durationMs, totalRounds } });
+      aiClient.trackEvent({
+        name: 'stress_completed',
+        properties: dims,
+        measurements: {
+          durationMs, totalRounds,
+          invocationSequence: lifecycle.invocationSequence,
+          processUptimeMs: lifecycle.processUptimeMs,
+        },
+      });
     }
 
     // Release the memory reference now that we have recorded the stress period.
@@ -134,6 +153,10 @@ app.http('stress', {
     const body = {
       plan: PLAN,
       runId,
+      phase,
+      sampleId,
+      invocationId: context.invocationId,
+      lifecycle,
       durationMs,
       params: { cpuMs, memMB, loops },
       cpuRounds: totalRounds,

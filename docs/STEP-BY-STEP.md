@@ -4,17 +4,23 @@ This guide takes you from an empty environment to a running **Flex Consumption
 vs reserved-capacity plan (App Service Dedicated P0v3)** comparison monitored
 with Application Insights.
 
+For the full private **Flex + EP1 + Dedicated** demo, use the
+[deployment, rebuild and demo runbook](DEPLOYMENT-RUNBOOK.md). That is the
+consolidated operational procedure, including the optional VM and reconstruction
+after destruction. This guide retains the original two-arm workflow.
+
 > The "Premium" side runs on a **Dedicated plan** (keyless, always-on), not
-> **Elastic Premium**. EP requires an Azure Files content share with a shared
-> key, which the demo subscription disables through policy. Switching to EP
-> requires infrastructure changes; `EP1` is not a supported value for
-> `premium_sku_name` in this project.
+> **Elastic Premium**. The default EP Azure Files deployment needs a shared key.
+> An optional **third EP1 app without Azure Files** now uses a private Blob
+> package and managed identity; see [Startup comparison](STARTUP-COMPARISON.md).
+> This does not change the legacy arm: `EP1` is still not a supported value for
+> `premium_sku_name`.
 
 ---
 
 ## 0. Prerequisites
 
-- **Azure CLI** (`az`), **Terraform >= 1.9**, **Node.js 20+**, **Azure Functions
+- **Azure CLI** (`az`), **Terraform >= 1.9**, **Node.js 22+**, **Azure Functions
   Core Tools v4**, and **PowerShell 7** (recommended).
 - Sign in and select your subscription:
   ```powershell
@@ -97,6 +103,9 @@ Internally:
 
 ### 2.1 Verify connectivity and warm up the apps
 
+Do this **before**, not during, a startup experiment. Health calls warm workers
+and increment the shared process invocation counter.
+
 The `/api/health` endpoint is anonymous:
 
 ```powershell
@@ -168,14 +177,27 @@ runs **both thread groups** (`flex-tg` and `premium-tg`) with identical settings
 
 Use separate runs and compare them by `runId`:
 
-- **Cold start**: with `flex_always_ready_count = 0`, leave both apps idle for
-  a few minutes and start a short run. Dedicated stays warm (`always_on`);
-  Flex can scale to zero.
+- **Idle first hit**: with `flex_always_ready_count = 0`, use the dedicated
+  startup protocol below. Flex can scale to zero, but no fixed idle interval
+  guarantees it; a slow response or new process does not prove a cold start.
 - **Steady state**: warm up both apps, apply sustained load, and exclude the
   warm-up period.
 - **Scale-out**: observe each plan's **instance count**, using the `hostname`
   dimension in Application Insights. Increase `premium_worker_count` to give
   Dedicated more reserved capacity.
+
+### 3.2 Startup/readiness experiment with real Elastic Premium
+
+Follow [STARTUP-COMPARISON.md](STARTUP-COMPARISON.md) to prepare the optional EP1
+arm, publish its immutable package from a private-network executor, and compare
+Flex always-ready **0 vs 1** with EP **minimum=1 / prewarmed buffer=1**.
+
+The new `scripts\run-startup-comparison.ps1` records each invocation and generates
+immediate tables, JSON summaries and a configuration manifest. It has separate
+idle-probe, warm-baseline and burst modes. Use burst mode to investigate the
+prewarmed-buffer configuration, subject to observed concurrent scale-out and
+the documented limitations of EP without Azure Files. Dedicated remains a
+separate optional reference; it is never labeled as EP.
 
 ---
 
@@ -236,15 +258,21 @@ Alternatively, adjust SKUs or scaling in `terraform.tfvars` and run
 
 ## 7. Cleanup
 
-From the repository root:
+**Back up the data first.** Destruction removes the accounts containing packages
+and results; local Run Command receipts are not complete backups. See
+[retention, backup and destruction](DEPLOYMENT-RUNBOOK.md#retention-backup-and-destruction)
+for private export, state protection and selective-runner cleanup warnings.
+
+From the repository root, with appropriate private data-plane connectivity:
 
 ```powershell
-cd infra
-terraform destroy
+terraform "-chdir=infra" plan -destroy "-out=tfplan.bin"
+# Review every deletion and obtain approval before applying.
+terraform "-chdir=infra" apply tfplan.bin
 ```
 
-This removes the **entire** resource group and stops its ongoing resource
-charges.
+This removes the **entire** resource group, including any manually added resources
+it contains. Do not proceed if backups are unverified or state is inconsistent.
 
 ---
 

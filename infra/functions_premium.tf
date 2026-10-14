@@ -2,9 +2,9 @@
 # "Premium" side: Dedicated App Service plan function app
 #
 # Design note / deviation: the subscription enforces keyless + private storage
-# (allowSharedKeyAccess = false). Elastic Premium (EPx) requires an Azure Files
-# content share that only supports a shared-key connection string, so it is not
-# viable here. Instead the always-on / reserved-capacity side runs on a
+# (allowSharedKeyAccess = false). The usual EP Azure Files deployment needs a
+# shared-key connection string. The optional EP arm instead uses a private Blob
+# package without Azure Files. This always-on / reserved-capacity side stays on a
 # Dedicated App Service plan (default P0v3), which supports:
 #   * identity-based AzureWebJobsStorage (storage_uses_managed_identity = true)
 #   * running without the Azure Files mount (WEBSITES_ENABLE_APP_SERVICE_STORAGE
@@ -24,6 +24,9 @@ resource "azurerm_service_plan" "premium" {
 }
 
 resource "azurerm_linux_function_app" "premium" {
+  lifecycle {
+    ignore_changes = [tags["hidden-link: /app-insights-resource-id"]]
+  }
   name                = local.premium_app_name
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name

@@ -54,8 +54,7 @@ resource "azurerm_function_app_flex_consumption" "flex" {
   }
 
   app_settings = {
-    PLAN_LABEL                            = "flex"
-    APPLICATIONINSIGHTS_CONNECTION_STRING = azurerm_application_insights.main.connection_string
+    PLAN_LABEL = "flex"
     # Identity-based AzureWebJobsStorage for the host secret/key store. The Flex
     # resource otherwise injects a shared-key connection string with an empty
     # AccountKey (shared keys are disabled by policy), which breaks key
@@ -67,9 +66,10 @@ resource "azurerm_function_app_flex_consumption" "flex" {
   }
 
   site_config {
-    minimum_tls_version           = "1.2"
-    ip_restriction_default_action = local.restrict_public ? "Deny" : "Allow"
-    scm_use_main_ip_restriction   = true
+    application_insights_connection_string = azurerm_application_insights.main.connection_string
+    minimum_tls_version                    = "1.2"
+    ip_restriction_default_action          = local.restrict_public ? "Deny" : "Allow"
+    scm_use_main_ip_restriction            = true
 
     dynamic "ip_restriction" {
       for_each = local.restrict_public ? [1] : []
@@ -90,14 +90,22 @@ resource "azurerm_function_app_flex_consumption" "flex" {
   ]
 
   tags = local.tags
+  lifecycle {
+    ignore_changes = [tags["hidden-link: /app-insights-resource-id"]]
+  }
 }
 
 # The Flex Consumption resource injects a plain AzureWebJobsStorage connection
 # string with an empty AccountKey (shared keys disabled by policy), which breaks
 # the host secret store. Remove it so the AzureWebJobsStorage__* identity
-# settings take effect. Re-runs if the app is recreated.
+# settings take effect. Re-run after the experiment's runtime/readiness changes.
 resource "terraform_data" "flex_fix_host_storage" {
-  triggers_replace = [azurerm_function_app_flex_consumption.flex.id]
+  triggers_replace = [
+    azurerm_function_app_flex_consumption.flex.id,
+    var.flex_runtime_version,
+    var.flex_always_ready_count,
+    azurerm_function_app_flex_consumption.flex.app_settings,
+  ]
 
   provisioner "local-exec" {
     interpreter = ["cmd", "/c"]
