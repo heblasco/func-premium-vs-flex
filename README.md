@@ -45,19 +45,37 @@ naming collisions.
 
 ## Architecture
 
-[![Architecture showing parallel load testing of Flex and Dedicated Function Apps, private endpoints and VNet integration, separate keyless storage accounts, and shared Application Insights and Log Analytics.](docs/assets/architecture.png)](docs/assets/architecture.png)
+[![Extended architecture comparing Flex, Elastic Premium EP1 and Dedicated P0v3, with a private verification VM, outbound-only NAT, private endpoints, separate keyless storage, durable results and shared monitoring.](docs/assets/architecture.png)](docs/assets/architecture.png)
 
-The default VNet address space is `10.60.0.0/22`. Azure Load Testing engines
-use `snet-loadtest` to reach the function `sites` private endpoints in `snet-pe`.
-The apps connect to their separate storage accounts through `snet-flex-integ`
-and `snet-premium-integ`, then the blob/queue/table private endpoints in
-`snet-pe`. VNet-linked Private DNS resolves `privatelink.azurewebsites.net`
-and the storage endpoints.
+The diagram shows the **extended verification topology**, including the optional
+Elastic Premium EP1 arm and private verification runner. The legacy `premium`
+app remains **Dedicated P0v3**, not Elastic Premium. It records the configuration
+verified on 2026-10-14, not a live Azure inventory.
 
-The deployer's allowed IP/CIDR reaches the public site and SCM endpoints for
-direct tests and code publishing. Both apps send telemetry to shared Application
-Insights and Log Analytics. The diagram represents the repository's default
-configuration, not a live Azure inventory.
+The default VNet address space is `10.60.0.0/22`. The runner VM in
+`snet-verification` builds, publishes and tests all three apps through private
+endpoints. Azure Run Command provides control-plane management: the VM has no
+NIC public IP and its NSG denies inbound traffic. Its NAT Gateway and Standard
+public IP provide **outbound-only** connectivity. The VM is a build/load client,
+**not a Functions runtime dependency**.
+
+The apps use `snet-flex-integ`, `snet-ep-integ` and `snet-premium-integ` for
+outbound VNet integration, then reach their separate keyless storage accounts
+through blob/queue/table private endpoints in `snet-pe`. Sites private endpoints
+provide inbound access; the PaaS workers and storage are not hosted inside these
+subnets. VNet-linked Private DNS resolves the private endpoints.
+
+The runner publishes Flex and Dedicated through private SCM and uploads EP's
+immutable package to private Blob storage. EP reads it with managed identity,
+without SAS or Azure Files. Invocation-level results persist in the private
+`startupresults` container in Flex storage. All three apps send telemetry to
+shared Application Insights and Log Analytics.
+
+Azure Load Testing in `snet-loadtest` remains a **legacy two-arm option**
+(Flex and Dedicated); the existing JMeter script does not target EP. Corporate
+IP/CIDR-restricted public site and SCM access remains an alternative, not the
+private runner's path. See the [deployment and demo runbook](docs/DEPLOYMENT-RUNBOOK.md)
+for provisioning, package bootstrap, repeat runs and teardown.
 
 The diagram uses [official Azure architecture icons](https://learn.microsoft.com/en-us/azure/architecture/icons/)
 from Microsoft's V24 icon set. The icons are embedded in the editable source,

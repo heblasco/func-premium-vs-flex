@@ -41,8 +41,11 @@ Nothing in the measurement runner creates, restarts, or reconfigures Azure resou
 The optional topology adds one independent EP1 plan/app, user-assigned identity,
 storage account, Blob package container, integration subnet/NSG, three storage
 private endpoints and (by default) one app private endpoint. Existing apps and
-their state addresses remain unchanged. The existing architecture diagram shows
-only the default topology; this optional third arm is not depicted.
+their state addresses remain unchanged. The
+[architecture diagram](assets/architecture.png) includes this optional third arm,
+the private verification VM, outbound-only NAT, private package publication and
+durable results. Its [editable Excalidraw source](assets/architecture.excalidraw)
+is maintained alongside the image.
 
 ### Keyless EP caveat and prerequisites
 
